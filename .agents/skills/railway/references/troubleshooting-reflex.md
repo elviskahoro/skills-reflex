@@ -390,15 +390,42 @@ Run migrations via pre-deploy command:
 preDeployCommand = [".venv/bin/reflex db migrate"]
 ```
 
-## Check logs when stuck
+## Which logs to pull when a deploy fails
+
+`railway logs` with no flags streams the most recent **successful** deploy's runtime logs — almost never what you want when debugging a failure. Use these instead:
 
 ```bash
-railway logs                  # stream current service
-railway logs --deployment <id>   # specific deployment
-railway status                # show linked project/env/service
+# Build failed (red ❌ on the build step):
+railway logs --latest --build --lines 200
+
+# Container built but healthcheck / runtime crashed:
+railway logs --latest --deployment --lines 100
+
+# Project-wide view when no service is linked:
+railway service status --all
 ```
 
-Or dashboard → service → Logs tab.
+`--latest` is the key flag — it means "the most recent deploy even if it failed or is still building", overriding the default "most recent success".
+
+Default streams; pass `--lines N` or `--since 5m` to fetch a snapshot and exit. Cleaner output for pasting into a tool or for reasoning through a failure.
+
+### Typical debug loop
+
+1. `railway up --ci` — deploys local dir, streams build logs, exits. If it says `Deploy failed`, move to step 2.
+2. `railway logs --latest --build --lines 200` — find the last `[ERRO]` line. Fix the Dockerfile. Go back to 1.
+3. Once the build succeeds but healthcheck still fails: `railway logs --latest --deployment --lines 100` — look for stack traces. Fix runtime config. Go back to 1.
+
+### `railway login` in non-interactive shells
+
+`railway login` opens a browser and fails with `Cannot login in non-interactive mode` when run through a non-TTY shell (CI, containers, Claude Code's `!` prefix). Use the pairing-code flow instead:
+```bash
+railway login --browserless
+```
+
+### Expected noise to ignore
+
+- `/bin/sh: lscpu: not found` during `reflex init` / `reflex export` on Alpine — harmless. Reflex tries to detect CPU for parallelism hints; absence falls through to `None`.
+- `WARNING: opening from cache ... APKINDEX.tar.gz: No such file or directory` during `apk del` — cosmetic cache miss, doesn't affect the delete.
 
 ## Nothing works, and the app used to deploy
 
