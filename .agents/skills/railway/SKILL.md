@@ -81,16 +81,17 @@ Reflex has Railway-specific sharp edges. Internalize these before editing anythi
 1. **Reflex listens on `$PORT`.** Railway injects `PORT`; `reflex run --env prod` reads it. Don't hardcode 3000 in the start command.
 2. **Reflex builds the frontend on first startup** in prod mode (not during `docker build`). Peak memory is during first boot, not image build. Plan memory accordingly — this is the #1 cause of Railway OOMs for Reflex apps.
 3. **Healthchecks against `/` are fragile** on Reflex because `/` serves a SPA. Options: leave `healthcheckPath` unset for the first deploy, use a short `healthcheckTimeout` only after verifying the app responds, or add an explicit `/ping` endpoint. Reflex does not guarantee `/ping` by default, so verify before trusting it.
-4. **Use Alpine-based Python images.** Slim images exhaust the free-tier 512MB build budget. See [references/troubleshooting-reflex.md](references/troubleshooting-reflex.md) for the exact pattern (build deps as virtual, `uv sync --frozen --no-dev`, `apk del .build-deps`).
-5. **Postgres wiring.** Add a Postgres service via "New → Database → PostgreSQL", then reference it from the Reflex service as `DATABASE_URL=${{Postgres.DATABASE_URL}}`. Always use the **private** URL for service-to-service — it's free, faster, and doesn't leave Railway's network. The public URL incurs egress.
-6. **Single-service vs split.** Reflex apps run as one service by default (Python process serves both backend on :8000 and frontend on :3000 via Reflex's own bundling). Only split into two services if you have a reason — the Caddy reverse-proxy pattern is for split deployments.
+4. **Use Alpine-based Python images — and install the bun-installer runtime deps.** Slim images exhaust the free-tier 512MB build budget. Alpine is the right base, but `python:3.11-alpine` is missing `bash`, `curl`, `libstdc++`, and `libgcc` — Reflex shells out to `bash <script>` on first boot to download bun, and bun itself needs libstdc++/libgcc on musl. Install those as a **non-virtual** package (don't put them in `.build-deps` — they need to persist to runtime). See [references/troubleshooting-reflex.md](references/troubleshooting-reflex.md) for the full Dockerfile.
+5. **Commit `uv.lock`.** Many Reflex starter templates gitignore it (treating the app like a library). `railway up` honors `.gitignore`, so the file silently doesn't reach the builder, and `uv sync --frozen` fails on "Unable to find lockfile". Remove from `.gitignore`, commit, `COPY pyproject.toml uv.lock ./`.
+6. **Postgres wiring.** Add a Postgres service via "New → Database → PostgreSQL", then reference it from the Reflex service as `DATABASE_URL=${{Postgres.DATABASE_URL}}`. Always use the **private** URL for service-to-service — it's free, faster, and doesn't leave Railway's network. The public URL incurs egress.
+7. **Single-service, one process vs two.** The simplest deploy runs `reflex run --env prod` in one container (Python serves backend on :8000 and frontend on :3000). For a more robust production setup — faster cold starts, explicit `$PORT` binding, no runtime Next.js build — use a single service that runs **two processes** via an entrypoint script: `reflex run --backend-only` plus Caddy serving a pre-exported frontend from `/srv`. This is still one Railway service; the Caddyfile already in many Reflex starter repos is designed for this pattern. See [references/troubleshooting-reflex.md](references/troubleshooting-reflex.md) → "Production pattern: Caddy + static frontend export".
 
 Example `railway.toml` for a typical single-service Reflex app:
 
 ```toml
 [build]
 builder = "DOCKERFILE"
-watchPatterns = ["Dockerfile", "pyproject.toml", "web/**"]
+watchPatterns = ["Dockerfile", "pyproject.toml", "uv.lock", "web/**"]
 
 [deploy]
 startCommand = ".venv/bin/reflex run --env prod"
