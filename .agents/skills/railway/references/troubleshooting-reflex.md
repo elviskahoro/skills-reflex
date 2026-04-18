@@ -23,11 +23,18 @@ FROM python:3.11-alpine
 
 WORKDIR /app
 
+# Runtime deps Reflex needs on musl Alpine: bash + curl for the bun installer
+# (Reflex shells out to `bash <download-script>` on first boot), libstdc++/libgcc
+# for the bun binary itself. Skipping these produces a working build but a
+# crash-looping container — see "Alpine runtime deps" section below.
+RUN apk add --no-cache bash curl libstdc++ libgcc
+
 # Install build deps as a virtual package — removed after uv sync.
 RUN apk add --no-cache --virtual .build-deps gcc musl-dev linux-headers
 
-# Copy only dependency manifests first (Docker layer caching).
-COPY pyproject.toml ./
+# Copy BOTH dep manifests — uv.lock is required by `--frozen`. Many Reflex
+# starter templates gitignore uv.lock; remove it from .gitignore and commit it.
+COPY pyproject.toml uv.lock ./
 
 # Install uv + project deps, then strip build deps in one layer.
 RUN pip install --no-cache-dir uv && \
@@ -77,6 +84,33 @@ PYTHONUNBUFFERED = "1"
 | `uv sync --frozen --no-dev` | Lockfile install, no dev deps (pytest, mypy, etc.) — often shaves 50-100 MB. |
 | `COPY pyproject.toml ./` before `COPY . .` | Lets Docker reuse the dep layer when only app code changes. |
 
+### Alpine runtime deps (the bun-installer trap)
+
+Even with the memory-safe Alpine build above, `reflex run` on first boot will crash with:
+
+```
+FileNotFoundError: [Errno 2] No such file or directory: 'bash'
+  File ".../reflex/utils/js_runtimes.py", line 287, in install_bun
+    download_and_run(...)
+```
+
+Reflex downloads bun on first startup via a bash script. `python:3.11-alpine` ships neither `bash` nor `curl`, and bun's binary is dynamically linked against `libstdc++`/`libgcc` (not present on a bare musl Alpine).
+
+Fix: `apk add --no-cache bash curl libstdc++ libgcc` as a **non-virtual** package (see the Dockerfile above). Keep these out of `.build-deps` — they need to persist to runtime.
+
+### uv.lock missing at build time
+
+Symptom during `docker build`:
+```
+error: Unable to find lockfile at `uv.lock`, but `--frozen` was provided.
+```
+
+Two compounding causes:
+1. Reflex starter templates commonly gitignore `uv.lock` (treating the app like a library). `railway up` honors `.gitignore`, so the file never reaches the builder.
+2. Dockerfiles of the form `COPY pyproject.toml ./` (no `uv.lock`) run `uv sync --frozen` before `COPY . .` lands the lockfile.
+
+Fix: remove `uv.lock` from `.gitignore`, commit it, and `COPY pyproject.toml uv.lock ./`. Reproducible builds are the point of `--frozen`.
+
 ### If Alpine isn't an option (C-extension incompatibility)
 
 Some wheels don't ship for `musllinux` (numpy/scipy variants, old C-extensions). If you hit `No module named '_psycopg'` or similar, either:
@@ -112,6 +146,118 @@ Fix: point healthcheck at a stable endpoint, or unset it. Reflex doesn't guarant
 Fix: let Railway set `PORT`; don't override in the start command.
 
 **4. Host-filter middleware rejecting `healthcheck.railway.app`.** Rare in Reflex, but if you've wrapped with a middleware that filters by `Host:`, add `healthcheck.railway.app` to the allowlist.
+
+## Production pattern: Caddy + static frontend export
+
+When you need a robust production deploy (properly served frontend, clean `$PORT` routing, no runtime Next.js build), don't rely on `reflex run` as a process manager. Export the frontend at image build time and let Caddy serve it.
+
+### When to use this vs bare `reflex run`
+
+| Need | `reflex run` (simple) | Caddy + export (this pattern) |
+|---|---|---|
+| Listen on Railway's `$PORT` | ❌ hardcodes 3000 | ✔️ Caddy binds `:{$PORT}` |
+| Frontend ready on first request | ❌ 1-3 min compile | ✔️ served immediately |
+| Memory at runtime | high (Next.js build) | low (static files) |
+| Memory at build | low (defers work) | higher (runs `reflex export`) |
+| Complexity | one process | two processes + entrypoint |
+
+If you're on free-tier RAM and build keeps OOMing, stick with `reflex run`. Otherwise prefer this pattern.
+
+### Dockerfile (on top of the Alpine base)
+
+```dockerfile
+# Add to the `apk add` line from the Alpine base:
+RUN apk add --no-cache bash curl unzip nodejs npm caddy libstdc++ libgcc
+
+# ... uv sync as before, then COPY . . , then:
+
+RUN .venv/bin/reflex init && \
+    .venv/bin/reflex export --frontend-only && \
+    mkdir -p /srv && \
+    unzip -q frontend.zip -d /srv && \
+    rm frontend.zip && \
+    rm -rf .web
+
+RUN chmod +x /app/entrypoint.sh
+
+CMD ["/app/entrypoint.sh"]
+```
+
+### `Caddyfile` at repo root
+
+```caddyfile
+:{$PORT}
+
+encode gzip
+
+@backend_routes path /_event/* /ping /_upload /_upload/*
+handle @backend_routes {
+	reverse_proxy localhost:8000
+}
+
+root * /srv
+route {
+	try_files {path} {path}/ /404.html
+	file_server
+}
+```
+
+The websocket routes Reflex uses (`/_event/*`, `/_upload`) must be proxied — without them state updates silently fail on a visibly-working page.
+
+### `entrypoint.sh` at repo root
+
+```bash
+#!/bin/bash
+set -e
+
+.venv/bin/reflex run --env prod --backend-only --backend-port 8000 &
+BACKEND_PID=$!
+
+caddy run --config /app/Caddyfile --adapter caddyfile &
+CADDY_PID=$!
+
+wait -n
+kill -TERM "$BACKEND_PID" "$CADDY_PID" 2>/dev/null || true
+wait
+```
+
+`wait -n` is the important bit — if either process dies, the container exits and Railway's restart policy kicks in, rather than silently running with half the stack broken.
+
+### `railway.toml` update
+
+Remove the `startCommand` (Dockerfile `CMD` handles it now) and include the new files in watch patterns:
+
+```toml
+[build]
+builder = "DOCKERFILE"
+watchPatterns = ["Dockerfile", "pyproject.toml", "uv.lock", "web/**", "Caddyfile", "entrypoint.sh"]
+```
+
+## `railway up` fails during "Indexing..."
+
+Symptom:
+```
+Indexing...
+<path>: IO error for operation on <path>: No such file or directory (os error 2)
+```
+
+Cause: `railway up` follows symlinks while building its upload archive. If the symlink target doesn't exist (e.g. an uninitialized git submodule, or `.claude/skills` → a skills repo you haven't cloned), indexing crashes before any upload happens.
+
+Fix: create a `.railwayignore` at repo root. Railway respects `.gitignore` for uploads but does **not** read `.dockerignore`. Mirror the relevant `.dockerignore` entries into `.railwayignore` so broken symlinks are excluded:
+
+```
+.git
+.venv
+.claude
+symlink
+.trunk
+__pycache__
+node_modules
+web/.web
+web/.reflex
+```
+
+Either this or `git submodule update --init` (if you actually want the submodule content) resolves the indexing failure.
 
 ## "No start command could be found"
 
