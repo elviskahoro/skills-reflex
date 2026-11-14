@@ -43,7 +43,7 @@ class TodoState(rx.State):
     new_todo: str = ""
     filter_mode: str = "all"  # "all", "active", "completed"
 
-    @rx.var
+    @rx.var(cache=True)
     def visible_todos(self) -> list[Todo]:
         if self.filter_mode == "active":
             return [t for t in self.todos if not t.completed]
@@ -51,7 +51,7 @@ class TodoState(rx.State):
             return [t for t in self.todos if t.completed]
         return self.todos
 
-    @rx.var
+    @rx.var(cache=True)
     def active_count(self) -> int:
         return sum(1 for t in self.todos if not t.completed)
 
@@ -63,6 +63,10 @@ class TodoState(rx.State):
 
     def set_new_todo(self, value: str):
         self.new_todo = value
+
+    def key_down(self, key: str):
+        if key == "Enter":
+            return self.add_todo()
 
     def add_todo(self):
         if not self.new_todo.strip():
@@ -137,10 +141,7 @@ def index() -> rx.Component:
                     placeholder="What needs to be done?",
                     value=TodoState.new_todo,
                     on_change=TodoState.set_new_todo,
-                    on_key_down=rx.cond(
-                        rx.Var.create("Enter") == rx.Var.create("Enter"),
-                        TodoState.add_todo,
-                    ),
+                    on_key_down=TodoState.key_down,
                     flex="1",
                 ),
                 rx.button("Add", on_click=TodoState.add_todo),
@@ -333,14 +334,19 @@ A multi-page application with login, protected routes, and shared layout.
 import reflex as rx
 
 
+def verify_credentials(username: str, password: str) -> bool:
+    # STUB: fail-closed. Replace with a real check (hashed password lookup).
+    return False
+
+
 class AuthState(rx.State):
     _user_id: int = 0
     username: str = ""
     logged_in: bool = False
 
     def login(self, form_data: dict):
-        # Replace with real auth logic
-        if form_data.get("username") and form_data.get("password"):
+        # Credentials are checked by verify_credentials(); never accept arbitrary input.
+        if verify_credentials(form_data.get("username", ""), form_data.get("password", "")):
             self._user_id = 1
             self.username = form_data["username"]
             self.logged_in = True
@@ -480,9 +486,10 @@ A chat application pattern with streaming responses.
 
 ```python
 import reflex as rx
+from pydantic import BaseModel
 
 
-class Message(rx.Base):
+class Message(BaseModel):  # pydantic BaseModel; rx.Base is deprecated in Reflex 0.9.x
     role: str  # "user" or "assistant"
     content: str
 

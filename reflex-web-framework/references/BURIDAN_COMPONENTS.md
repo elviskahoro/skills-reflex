@@ -214,6 +214,7 @@ def accordion_example() -> rx.Component:
 ```python
 import reflex as rx
 from your_app_name.components.ui.dialog import dialog, dialog_content, dialog_header, dialog_body
+# NOTE: ClientStateVar is experimental; its import path varies by Reflex version (verify for your pin)
 from reflex.experimental import ClientStateVar
 
 # Create client-side state for dialog visibility
@@ -269,7 +270,7 @@ def avatar_example() -> rx.Component:
             ),
             rx.vstack(
                 rx.text("John Doe", weight="bold"),
-                rx.text("john@example.com", size="sm"),
+                rx.text("john@example.com", size="2"),
                 spacing="0",
             ),
             spacing="4",
@@ -302,7 +303,7 @@ class TodoState(rx.State):
 
     def toggle_todo(self, todo_id: int):
         self.todos = [
-            todo.copy(update={"done": not todo["done"]}) if todo["id"] == todo_id else todo
+            {**todo, "done": not todo["done"]} if todo["id"] == todo_id else todo
             for todo in self.todos
         ]
 
@@ -419,7 +420,7 @@ def user_card(user_name: str, user_email: str):
             avatar(name=user_name),
             rx.vstack(
                 rx.text(user_name, weight="bold"),
-                rx.text(user_email, size="sm"),
+                rx.text(user_email, size="2"),
                 spacing="0",
             ),
             spacing="4",
@@ -431,6 +432,7 @@ def user_card(user_name: str, user_email: str):
 
 ```python
 # ✅ Good - dropdown toggle doesn't need server state
+# NOTE: ClientStateVar is experimental; its import path varies by Reflex version (verify for your pin)
 from reflex.experimental import ClientStateVar
 
 menu_open = ClientStateVar.create("menu_open", False)
@@ -460,6 +462,4 @@ def menu():
 
 ## Next Steps
 
-- [Using Charts](BURIDAN_CHARTS.md) - Data visualization
-- [Advanced Features](BURIDAN_ADVANCED.md) - ClientStateVar, theming, utilities
 - [Setup & Installation](BURIDAN_SETUP.md) - Getting started

@@ -240,5 +240,3 @@ Update if needed before installing buridan-ui.
 ## Next Steps
 
 - [Using Components](BURIDAN_COMPONENTS.md) - Component patterns and props
-- [Building Charts](BURIDAN_CHARTS.md) - Data visualization with Recharts
-- [Advanced Features](BURIDAN_ADVANCED.md) - ClientStateVar, theming, utilities
