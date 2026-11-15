@@ -194,6 +194,12 @@ Reflex runs on FastAPI internally. Add custom REST endpoints via the `api_transf
 
 ```python
 from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
+
+
+class UserCreate(BaseModel):
+    username: str
+    email: str
 
 # Create a FastAPI instance for custom routes
 api = FastAPI()
@@ -209,9 +215,10 @@ async def list_users():
         return [{"id": u.id, "username": u.username} for u in users]
 
 @api.post("/api/users")
-async def create_user(data: dict):
+async def create_user(data: UserCreate):
+    # Whitelisted fields only; add authentication before exposing in production.
     with rx.session() as session:
-        user = User(**data)
+        user = User(username=data.username, email=data.email)
         session.add(user)
         session.commit()
         return {"id": user.id, "username": user.username}
